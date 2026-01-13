@@ -37,4 +37,17 @@ head:
   - [[-1, 10], 1, Concat, [1]] # cat head P5
   - [-1, 3, C2fCIB, [1024, True, True]] # 22 (P5/32-large)
 
-  - [[16, 19, 22], 1, v10Detect, [nc]] # Detect(P3, P4, P5)
+  # Branch 1: Process P3 (Small) from layer 16
+  - [16, 1, AVIB, [256]]          # 23
+  - [23, 1, FourierKAN, [256]]    # 24
+
+  # Branch 2: Process P4 (Medium) from layer 19
+  - [19, 1, AVIB, [512]]          # 25
+  - [25, 1, FourierKAN, [512]]    # 26
+
+  # Branch 3: Process P5 (Large) from layer 22
+  - [22, 1, AVIB, [1024]]         # 27
+  - [27, 1, FourierKAN, [1024]]   # 28
+
+  # Detect Head: Inputs updated to [24, 26, 28]
+  - [[24, 26, 28], 1, v10Detect, [nc]] # 29

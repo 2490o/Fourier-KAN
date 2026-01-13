@@ -87,21 +87,20 @@ class Proto(nn.Module):
 
 class AVIB(nn.Module):
     """
-    Adaptive Variational Information Bottleneck (AVIB) from TIP 2025 Fourier-KAN.
-    References: [cite: 148, 153, 159, 163, 179]
+    Adaptive Variational Information Bottleneck (AVIB).
+    Fixed for training stability: Residual Connection + Scaled Loss.
+    [cite_start]References: [cite: 148, 153, 179]
     """
 
     def __init__(self, c1, c2, ratio=1.0):
         super().__init__()
-        # c1: input channels, c2: output channels (usually keep c1=c2)
+
         self.c2 = c2
 
-        # Encoder: 生成 mean (mu) 和 log_variance (logvar)
-        # 论文提到 Encoder 是简单的卷积网络 [cite: 161]
+
         self.encoder = nn.Conv2d(c1, c2 * 2, 1, bias=True)
 
-        # Adaptive Beta Network (公式 3)
-        # 动态计算压缩率 beta [cite: 169, 172]
+
         self.gap = nn.AdaptiveAvgPool2d(1)
         self.beta_net = nn.Sequential(
             nn.Linear(c1, c1 // 2),
@@ -110,51 +109,62 @@ class AVIB(nn.Module):
             nn.Sigmoid()
         )
 
-        # 缩放因子，防止 beta 过小或过大，根据论文 "linearly scaled" [cite: 175]
-        self.beta_scale = 1e-3
 
-        # 用于存储训练时的 KL loss，以便在 loss.py 中调用
+        self.beta_scale = 1e-4  # 原来是 1e-3
+
         self.kl_loss = 0.0
 
-    def forward(self, x):
-        # 1. 计算 Beta (自适应压缩率)
-        b, c, _, _ = x.shape
-        # 使用 Global Average Pooling 获取全局特征
-        global_feat = self.gap(x).view(b, c)
-        beta = self.beta_net(global_feat) * self.beta_scale  # [Batch, 1]
 
-        # 2. 编码过程 (Formula 1)
+        self._init_weights()
+
+    def _init_weights(self):
+
+        nn.init.xavier_uniform_(self.encoder.weight)
+        if self.encoder.bias is not None:
+            nn.init.constant_(self.encoder.bias, 0)
+
+    def forward(self, x):
+        b, c, h, w = x.shape
+
+
+        global_feat = self.gap(x).view(b, c)
+        beta = self.beta_net(global_feat) * self.beta_scale
+
+
         encoded = self.encoder(x)
         mu, logvar = torch.split(encoded, self.c2, dim=1)
 
-        # 3. 重参数化 (Formula 2)
+
         if self.training:
+
+            logvar = torch.clamp(logvar, -10, 10)
+
             std = torch.exp(0.5 * logvar)
             eps = torch.randn_like(std)
-            z = mu + std * eps
+            z = mu + std * eps  # VIB 采样的特征
 
 
             kl_div = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
-            # 对空间维度和通道维度求和，对 Batch 求平均
-            kl_loss = (kl_div.sum(dim=(1, 2, 3)) * beta.squeeze()).mean()
-            self.kl_loss = kl_loss
 
-            return z
+
+            kl_mean = kl_div.mean()  # 对 Batch, C, H, W 全部求平均
+
+            self.kl_loss = kl_mean * beta.mean()
+
+
+            return x + z
+
         else:
 
-            return mu
+            return x + mu
 
     def __deepcopy__(self, memo):
-        """
-        Custom deepcopy to skip 'kl_loss' which might contain a non-leaf tensor.
-        EMA model does not need the loss value.
-        """
         cls = self.__class__
         result = cls.__new__(cls)
         memo[id(self)] = result
         for k, v in self.__dict__.items():
             if k == 'kl_loss':
-                setattr(result, k, 0.0)  # 复制时，将 kl_loss 重置为 0.0
+                setattr(result, k, 0.0)
             else:
                 setattr(result, k, deepcopy(v, memo))
         return result
@@ -168,24 +178,20 @@ class FourierKAN(nn.Module):
     Fixed for Mixed Precision Training (AMP) compatibility.
     """
 
-    def __init__(self, c1, L=4):
+    def __init__(self, c1, L=8):
         super().__init__()
-        # c1: input channels
-        # L: number of recombination stages (Paper uses L=8, we use 4 for speed/memory balance)
+
         self.c1 = c1
         self.L = L
 
-        # 融合权重 (Fusion Weights)
-        # 初始化为 1/L，让每个阶段贡献相等
+
         self.fusion_weights = nn.Parameter(torch.ones(L) / L)
 
-        # 定义二次多项式的参数: y = w2*x^2 + w1*x + w0
-        # Shape: [L, 3, c1, 1, 1] -> 3 corresponds to (w2, w1, w0)
+
         self.amp_params = nn.Parameter(torch.empty(L, 3, c1, 1, 1))
         self.phase_params = nn.Parameter(torch.empty(L, 3, c1, 1, 1))
 
-        # --- 初始化 ---
-        # 保证初始状态接近“恒等映射”，防止精度下降
+
         with torch.no_grad():
             # Amplitude initialization
             self.amp_params[:, 0].zero_()     # w2 = 0
@@ -201,49 +207,44 @@ class FourierKAN(nn.Module):
         # x shape: [Batch, Channel, Height, Width]
         B, C, H, W = x.shape
 
-        # --- 核心修复：强制转为 Float32 ---
-        # 解决 cuFFT 在半精度下不支持非2次幂尺寸的问题
+
         x_float = x.to(dtype=torch.float32)
 
-        # 1. FFT 变换 (float32)
+
         fft_x = torch.fft.rfft2(x_float, norm='backward')
 
-        # 2. 分解为幅度和相位
+
         amp = torch.abs(fft_x)
         phase = torch.angle(fft_x)
 
         out_features = []
 
-        # 3. 多级特征重组 (Multi-Stage Recombination)
+
         for i in range(self.L):
-            # 获取当前 stage 的参数
+
             w_amp = self.amp_params[i]
             w_phase = self.phase_params[i]
 
-            # 应用二次多项式变换: ax^2 + bx + c
-            # Quadratic polynomials perform best
+
             amp_recon = w_amp[0] * (amp ** 2) + w_amp[1] * amp + w_amp[2]
             phase_recon = w_phase[0] * (phase ** 2) + w_phase[1] * phase + w_phase[2]
 
-            # 4. iFFT 重建
-            # 重新构建复数: A * e^(iP)
+
             complex_recon = torch.polar(amp_recon, phase_recon)
-            # 逆变换回空间域 (结果仍为 float32)
+
             z_l = torch.fft.irfft2(complex_recon, s=(H, W), norm='backward')
             out_features.append(z_l)
 
-        # 5. 渐进式融合 (Progressive Fusion)
+
         final_out = torch.zeros_like(x_float) # 使用 float32 容器累加
 
-        # 归一化权重
+
         norm_weights = torch.softmax(self.fusion_weights, dim=0)
 
         for i, z in enumerate(out_features):
             final_out += norm_weights[i] * z
 
-        # --- 残差连接 & 类型回转 ---
-        # 1. 将 float32 的计算结果转回原始精度 (例如 float16)
-        # 2. 加上原始输入 x (ResNet style)
+
         return x + final_out.to(dtype=x.dtype)
 
     def __deepcopy__(self, memo):

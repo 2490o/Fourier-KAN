@@ -255,7 +255,7 @@ class v8DetectionLoss:
             for module in self.model.modules():
                 # 检查是否是 AVIB 模块且该模块已有 kl_loss 属性 (在 forward 时计算的)
                 if isinstance(module, AVIB) and hasattr(module, 'kl_loss'):
-                    avib_loss += module.kl_loss
+                    avib_loss += module.kl_loss * 0.0001
 
         # 将 AVIB loss 加到总 loss 中 (loss[0], loss[1], loss[2] 是 tensor，可以直接加)
         # 这里的 avib_loss 已经包含了论文中的 beta 动态权重，直接相加即可
@@ -265,8 +265,8 @@ class v8DetectionLoss:
 
         total_loss = loss.sum() + avib_loss
 
-        return loss.sum() * batch_size, loss.detach()
-        # return total_loss * batch_size, loss.detach()  # loss(box, cls, dfl)
+        # return loss.sum() * batch_size, loss.detach()
+        return total_loss * batch_size, loss.detach()  # loss(box, cls, dfl)
 
 
 class v8SegmentationLoss(v8DetectionLoss):
