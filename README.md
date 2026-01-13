@@ -4,5 +4,4 @@
 
 This repository contains the official implementation of **["Fourier-KAN: Feature Distribution Decomposition and Recombination for Unknown-Domain Object Detection"]**.
 
-  ![Image text](https://github.com/2490o/LTFE/blob/main/resources/f2.png)
-Overall architecture of the Saliency Prototype Network
+  ![Image text](https://github.com/2490o/Fourier-KAN/blob/main/figures/f2.png)
