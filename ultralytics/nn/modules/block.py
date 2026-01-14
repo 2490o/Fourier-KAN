@@ -178,15 +178,13 @@ class FourierKAN(nn.Module):
     Fixed for Mixed Precision Training (AMP) compatibility.
     """
 
-    def __init__(self, c1, L=8):
+    def __init__(self, c1, L = 8):
         super().__init__()
 
         self.c1 = c1
         self.L = L
 
-
         self.fusion_weights = nn.Parameter(torch.ones(L) / L)
-
 
         self.amp_params = nn.Parameter(torch.empty(L, 3, c1, 1, 1))
         self.phase_params = nn.Parameter(torch.empty(L, 3, c1, 1, 1))
@@ -248,7 +246,6 @@ class FourierKAN(nn.Module):
         return x + final_out.to(dtype=x.dtype)
 
     def __deepcopy__(self, memo):
-        # 确保 EMA 更新时能正确复制模块
         cls = self.__class__
         result = cls.__new__(cls)
         memo[id(self)] = result

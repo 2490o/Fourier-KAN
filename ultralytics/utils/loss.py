@@ -246,27 +246,21 @@ class v8DetectionLoss:
         loss[1] *= self.hyp.cls  # cls gain
         loss[2] *= self.hyp.dfl  # dfl gain
 
-        # --- 【新增】 AVIB Loss 计算开始 ---
-        # 遍历模型所有模块，找到 AVIB 并累加其内部计算好的 kl_loss
+
         avib_loss = torch.tensor(0.0, device=self.device)
 
-        # 确保 self.model 存在 (即上面 __init__ 改对了)
+
         if hasattr(self, 'model'):
             for module in self.model.modules():
-                # 检查是否是 AVIB 模块且该模块已有 kl_loss 属性 (在 forward 时计算的)
+
                 if isinstance(module, AVIB) and hasattr(module, 'kl_loss'):
                     avib_loss += module.kl_loss * 0.0001
 
-        # 将 AVIB loss 加到总 loss 中 (loss[0], loss[1], loss[2] 是 tensor，可以直接加)
-        # 这里的 avib_loss 已经包含了论文中的 beta 动态权重，直接相加即可
-        # 注意：这里我们通常加到 loss[0] 或者单独处理，但在 YOLOv8/10 实现中，
-        # 最终返回的是 loss.sum()，所以加到 loss 向量的任意位置或者直接加到总和都可以。
-        # 为了不破坏 loss[0-2] 的显示含义(box, cls, dfl)，我们可以在返回时直接加上。
 
         total_loss = loss.sum() + avib_loss
 
-        # return loss.sum() * batch_size, loss.detach()
-        return total_loss * batch_size, loss.detach()  # loss(box, cls, dfl)
+
+        return total_loss * batch_size, loss.detach()
 
 
 class v8SegmentationLoss(v8DetectionLoss):
